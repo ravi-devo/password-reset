@@ -2,6 +2,10 @@ const Users = require("../model/userModel");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const config = require("../utils/config");
+const nodemailer = require("nodemailer");
+const crypto = require('crypto');
+const baseURL = 'http://localhost:8000'
+const path = require('path');
 
 const userController = {
     signIn: async (req, res) => {
@@ -35,7 +39,7 @@ const userController = {
 
             const token = jwt.sign(payload, secretKey, options);
 
-            res.json({message: "User signed in successfully.", token, username: user.username});
+            res.json({ message: "User signed in successfully.", token, username: user.username });
 
         } catch (error) {
             res.status(500).json({ message: "Internal server error", error });
@@ -70,6 +74,85 @@ const userController = {
         } catch (error) {
             res.status(500).json({ message: "Error registering user", error });
         }
+    },
+
+    forgotPassword: async (req, res) => {
+        const { username } = req.body;
+        const user = await Users.findOne({ username: username });
+
+        if (!user) {
+            return res.json({ message: "The user doesn't exist in the database, please check the username." });
+        }
+
+        const token = crypto.randomBytes(20).toString('hex');
+        const tokenExpiresAt = new Date();
+        tokenExpiresAt.setHours(tokenExpiresAt.getHours() + 1);
+
+        //Storing the token in database and expiration set to 1 hour
+        await Users.findOneAndUpdate(user._id, { token, tokenExpiresAt });
+
+        const resetLink = `${baseURL}/api/users/resetPassword/${token}`;
+        const mailOptions = {
+            from: config.EMAIL,
+            to: username,
+            subject: 'Reset Your Password',
+            text: `Click the following link to reset your password: ${resetLink}`,
+        }
+
+        const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: config.EMAIL,
+                pass: config.APP_PASSWORD
+            }
+        });
+
+        transporter.sendMail(mailOptions, (error, info) => {
+            if (error) {
+                console.error('Error sending email:', error);
+                res.status(500).send('Error sending email');
+            } else {
+                console.log('Email sent:', info.response);
+                res.send('Email sent. Check your inbox for the reset link.');
+            }
+        });
+    },
+
+    resetPassword: async (req, res) => {
+        try {
+            const { token } = req.params;
+            const user = await Users.findOne({ token });
+    
+            if(!user){
+                return res.json({message: "Invalid token"});
+            }
+    
+            if (new Date() > user.tokenExpiresAt) {
+                return res.json({ message: "Your token has expired, please request a new password reset link." })
+            }
+    
+            res.render(path.join(__dirname, '../views', 'setPassword'), { token });
+        } catch (error) {
+            return res.status(500).json({message: "Internal server error", error});
+        }
+    },
+
+    setPassword: async (req, res) => {
+        try {
+            const {token, newPassword} = req.body;
+            const user = await Users.findOne({token});
+            const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+            user.password = hashedPassword;
+            user.token = null;
+            user.tokenExpiresAt = null;
+            await user.save();
+    
+            res.json({message: "Password changed successfully."})
+        } catch (error) {
+            res.json({message: "Internal server error.", error})
+        }
+
     }
 }
 
